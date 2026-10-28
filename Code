@@ -159,10 +159,10 @@ function startNiederschlagAuswertungGeoSphere() {
     });
 
   // Ausgabe-Blatt erstellen/leeren
-  let outputSheet = ss.getSheetByName("Auswertung Niederschlag");
+  let outputSheet = ss.getSheetByName("Data");
 
   if (!outputSheet) {
-    outputSheet = ss.insertSheet("Auswertung Niederschlag");
+    outputSheet = ss.insertSheet("Data");
   } else {
     outputSheet.clear();
   }
@@ -183,6 +183,6 @@ function startNiederschlagAuswertungGeoSphere() {
     "GeoSphere-Auswertung abgeschlossen!\n\n" +
     "Analysierte Gemeinden: " + gemeinden.length + "\n" +
     "Zeitraum: 1980–2025\n\n" +
-    "Ergebnisse stehen im Blatt 'Auswertung Niederschlag'."
+    "Ergebnisse stehen im Blatt 'Data'."
   );
 }
