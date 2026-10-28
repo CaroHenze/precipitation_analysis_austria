@@ -1,0 +1,188 @@
+function startNiederschlagAuswertungGeoSphere() {
+
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const inputSheet = ss.getSheetByName("Gemeinden");
+
+  // Gemeinden und Koordinaten einlesen
+  const data = inputSheet.getRange(2, 1, inputSheet.getLastRow() - 1, 3).getValues();
+
+  const gemeinden = data
+    .map(r => ({
+      name: String(r[0]).trim(),
+      lat: Number(r[1]),
+      lon: Number(r[2])
+    }))
+    .filter(g => g.name && Number.isFinite(g.lat) && Number.isFinite(g.lon));
+
+
+  const BASE_URL ="https://dataset.api.hub.geosphere.at/v1/timeseries/historical/spartacus-v3-1d-1km";
+  const REGENTAG_GRENZE = 1;     // mm/Tag
+  const STARKREGEN_GRENZE = 20;  // mm/Tag
+  const BATCH_SIZE = 5;
+
+  const start = "1980-01-01T00:00";
+  const end = "2025-12-31T23:59";
+
+  const jahreswerte = {};
+
+  Logger.log(`Starte Auswertung für ${gemeinden.length} Gemeinden...`);
+
+  // Gemeinden in kleinen Paketen abfragen
+  for (let i = 0; i < gemeinden.length; i += BATCH_SIZE) {
+
+    const batch = gemeinden.slice(i, i + BATCH_SIZE);
+
+    const latLon = batch
+      .map(g => `lat_lon=${g.lat},${g.lon}`)
+      .join("&");
+
+    const url =
+      `${BASE_URL}?parameters=RR&start=${start}&end=${end}&${latLon}`;
+
+    try {
+
+      const response = UrlFetchApp.fetch(url, {
+        muteHttpExceptions: true
+      });
+
+      if (response.getResponseCode() !== 200) {
+        Logger.log(
+          `HTTP ${response.getResponseCode()}: ${response.getContentText()}`
+        );
+        continue;
+      }
+
+      const json = JSON.parse(response.getContentText());
+
+      const timestamps = json.timestamps;
+      const features = json.features;
+
+      if (!timestamps || !features) continue;
+
+      // Jede Gemeinde des Batches auswerten
+      batch.forEach((gemeinde, featureIndex) => {
+
+        const rr = features[featureIndex]
+          ?.properties
+          ?.parameters
+          ?.RR
+          ?.data;
+
+        if (!rr) return;
+
+        for (let t = 0; t < timestamps.length; t++) {
+
+          const datum = new Date(timestamps[t]);
+          const jahr = datum.getFullYear();
+          const raw = rr[t];
+          if (raw === null || raw === undefined || raw === "") continue;
+
+          const wert = Number(raw);
+          if (!isFinite(wert)) continue;
+
+          const key = `${gemeinde.name}|${jahr}`;
+
+          if (!jahreswerte[key]) {
+            jahreswerte[key] = {
+              gemeinde: gemeinde.name,
+              jahr: jahr,
+              niederschlag: 0,
+              niederschlagRegentage: 0,
+              regentage: 0,
+              starkregentage: 0,
+              max: 0
+            };
+          }
+
+          const statistik = jahreswerte[key];
+
+          // Jahressumme
+          statistik.niederschlag += wert;
+
+          // Regentag
+          if (wert >= REGENTAG_GRENZE) {
+            statistik.regentage++;
+            statistik.niederschlagRegentage += wert;
+          }
+
+          // Starkregentag
+          if (wert >= STARKREGEN_GRENZE) {
+            statistik.starkregentage++;
+          }
+
+          // Maximaler Tagesniederschlag
+          if (wert > statistik.max) {
+            statistik.max = wert;
+          }
+        }
+      });
+
+    } catch (e) {
+      Logger.log(`API-Fehler: ${e.message}`);
+    }
+
+    Utilities.sleep(250);
+  }
+
+  // Ergebnisse für Google Sheets vorbereiten
+  const results = [[
+    "Gemeinde",
+    "Jahr",
+    "Niederschlagssumme (mm)",
+    "SDII (mm/Regentag)",
+    "Max. Tagesniederschlag (mm)",
+    "Regentage",
+    "Starkregentage (>20mm)"
+  ]];
+
+  Object.values(jahreswerte)
+    .sort((a, b) =>
+      a.gemeinde.localeCompare(b.gemeinde) ||
+      a.jahr - b.jahr
+    )
+    .forEach(s => {
+
+      const sdii =
+        s.regentage > 0
+          ? s.niederschlagRegentage / s.regentage
+          : 0;
+
+      results.push([
+        s.gemeinde,
+        s.jahr,
+        Math.round(s.niederschlag * 10) / 10,
+        Math.round(sdii * 100) / 100,
+        Math.round(s.max * 10) / 10,
+        s.regentage,
+        s.starkregentage
+      ]);
+    });
+
+  // Ausgabe-Blatt erstellen/leeren
+  let outputSheet = ss.getSheetByName("Auswertung Niederschlag");
+
+  if (!outputSheet) {
+    outputSheet = ss.insertSheet("Auswertung Niederschlag");
+  } else {
+    outputSheet.clear();
+  }
+
+  outputSheet
+    .getRange(1, 1, results.length, results[0].length)
+    .setValues(results);
+
+  // Formatierung
+  outputSheet
+    .getRange(1, 1, 1, results[0].length)
+    .setFontWeight("bold");
+
+  outputSheet.setFrozenRows(1);
+  outputSheet.autoResizeColumns(1, results[0].length);
+
+  SpreadsheetApp.getUi().alert(
+    "GeoSphere-Auswertung abgeschlossen!\n\n" +
+    "Analysierte Gemeinden: " + gemeinden.length + "\n" +
+    "Zeitraum: 1980–2025\n\n" +
+    "Ergebnisse stehen im Blatt 'Auswertung Niederschlag'."
+  );
+}
